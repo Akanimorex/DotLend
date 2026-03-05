@@ -1,0 +1,29 @@
+# Environment variables — never commit secrets
+.env
+.env.*
+!.env.example
+
+# Hardhat / Foundry build artifacts
+cache/
+artifacts/
+typechain-types/
+
+# Node modules
+node_modules/
+frontend/node_modules/
+
+# Vite build output
+frontend/dist/
+
+# TypeScript output
+dist/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Logs
+*.log
+npm-debug.log*
