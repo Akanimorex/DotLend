@@ -2,9 +2,9 @@ import React, { useState, useEffect, useCallback } from "react";
 import { BrowserProvider, Contract, parseUnits, formatUnits } from "ethers";
 
 // ── Deployed contract addresses (Paseo Asset Hub testnet) ─────────────────────
-const LENDING_POOL_ADDRESS = "0xC9FcA5ec58c9C2B3cf42cC25C653293594Ca85a4";
-const WDOT_ADDRESS         = "0x3aB375b76E7EE81b6bF0828496bD4EA9ea03Ad95";
-const USDC_ADDRESS         = "0x6eadc1da36FeB2A4307027E520977Fdc2A50702b";
+const LENDING_POOL_ADDRESS = "0xBeC89e432e8A85CDcb0220420C3d7D52E210A163";
+const WDOT_ADDRESS         = "0x9bDd7B1019E1C622b713679F24aA460fe17d16e9";
+const USDC_ADDRESS         = "0xb924Dc33Ceaacbde696ED5EC3A70a6b6576c013c";
 
 const POOL_ABI = [
   "function depositCollateral(uint256 amount) external",
@@ -19,6 +19,8 @@ const POOL_ABI = [
 const ERC20_ABI = [
   "function approve(address spender, uint256 amount) external returns (bool)",
   "function balanceOf(address account) external view returns (uint256)",
+  "function faucet() external",
+  "function lastMint(address user) external view returns (uint256)"
 ];
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -154,6 +156,29 @@ export default function App(): React.ReactElement {
   const handleRepay    = () => approveAndCall(USDC_ADDRESS, 6, amount, async (s) => new Contract(LENDING_POOL_ADDRESS, POOL_ABI, s).repayLoan(parseUnits(amount, 6)));
   const handleWithdraw = () => callPool(async (s) => new Contract(LENDING_POOL_ADDRESS, POOL_ABI, s).withdrawCollateral(parseUnits(amount, 18)));
   const handleLiquidate = () => callPool(async (s) => new Contract(LENDING_POOL_ADDRESS, POOL_ABI, s).liquidate(borrowerAddr));
+
+  async function handleFaucet(tokenAddress: string, tokenName: string) {
+    setLoading(true); setError(""); setTxHash("");
+    try {
+      const signer = await getProvider().getSigner();
+      const token = new Contract(tokenAddress, ERC20_ABI, signer);
+      
+      const last = await token.lastMint(account);
+      const now = Math.floor(Date.now() / 1000);
+      if (now < Number(last) + 86400) {
+        throw new Error(`Faucet is on a 24-hour cooldown. Please try again later.`);
+      }
+
+      const tx = await token.faucet();
+      setTxHash(tx.hash);
+      await tx.wait();
+      await fetchPosition();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
 
   function hfColor(hf: string) {
     if (hf === "∞") return "#4ade80";
@@ -388,6 +413,16 @@ export default function App(): React.ReactElement {
             )}
 
             <div className="card">
+              <div className="tabs" style={{ padding: "12px 16px", background: "rgba(0,0,0,.4)", borderBottom: "1px solid rgba(240,40,122,.1)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div style={{ fontSize: 13, color: "#b07aa8", fontWeight: 600 }}>Testnet Faucets</div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button style={{ padding: "6px 12px", background: "rgba(240,40,122,.15)", border: "1px solid rgba(240,40,122,.3)", borderRadius: 8, color: "#f0e8f5", fontSize: 11, fontWeight: 700, cursor: "pointer", transition: ".2s" }} onClick={() => handleFaucet(WDOT_ADDRESS, "WDOT")} disabled={loading}>+ 100 WDOT</button>
+                    <button style={{ padding: "6px 12px", background: "rgba(139,42,139,.2)", border: "1px solid rgba(139,42,139,.4)", borderRadius: 8, color: "#f0e8f5", fontSize: 11, fontWeight: 700, cursor: "pointer", transition: ".2s" }} onClick={() => handleFaucet(USDC_ADDRESS, "USDC")} disabled={loading}>+ 1,000 USDC</button>
+                  </div>
+                </div>
+              </div>
+
               <div className="tabs">
                 {tabs.map(t => (
                   <button key={t.id} className={`tab${activeTab === t.id ? " active" : ""}`}

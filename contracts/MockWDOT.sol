@@ -8,6 +8,10 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 /// @notice Wrapped DOT mock for local and testnet development.
 ///         On mainnet/Polkadot Hub, replace with the real WDOT ERC-20 address via WDOT_ADDRESS in .env
 contract MockWDOT is ERC20, Ownable {
+    mapping(address => uint256) public lastMint;
+    uint256 public constant FAUCET_AMOUNT = 100 * 1e18; // 100 WDOT
+    uint256 public constant COOLDOWN = 1 days;
+
     constructor(address initialOwner)
         ERC20("Wrapped DOT", "WDOT")
         Ownable(initialOwner)
@@ -23,5 +27,12 @@ contract MockWDOT is ERC20, Ownable {
     /// @param amount  Amount to mint (18 decimals)
     function mint(address to, uint256 amount) external onlyOwner {
         _mint(to, amount);
+    }
+
+    /// @notice Public faucet for testnet users
+    function faucet() external {
+        require(block.timestamp >= lastMint[msg.sender] + COOLDOWN, "MockWDOT: Faucet cooldown active");
+        lastMint[msg.sender] = block.timestamp;
+        _mint(msg.sender, FAUCET_AMOUNT);
     }
 }
