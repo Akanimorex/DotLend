@@ -57,6 +57,12 @@ contract LendingPool is ILendingPool, Ownable, ReentrancyGuard {
     /// @notice Denominator for percentage-based constants
     uint256 public constant RATE_PRECISION = 100;
 
+    /// @notice Health factor threshold below which a warning is emitted (1.3e18)
+    uint256 public constant WARNING_THRESHOLD = 13e17;
+
+    /// @notice Minimum time between warnings for the same user (1 hour)
+    uint256 public constant WARNING_COOLDOWN = 1 hours;
+
     /// @notice Oracle price decimals (8, Chainlink-compatible)
     uint256 public constant ORACLE_PRICE_DECIMALS = 1e8;
 
@@ -77,6 +83,9 @@ contract LendingPool is ILendingPool, Ownable, ReentrancyGuard {
 
     /// @notice Returns the raw on-chain position for a user (debt does NOT include pending interest)
     mapping(address => Position) public positions;
+
+    /// @notice Tracks the last timestamp a warning was emitted for a user
+    mapping(address => uint256) public lastWarning;
 
     // ============ Constructor ============
 
@@ -111,6 +120,28 @@ contract LendingPool is ILendingPool, Ownable, ReentrancyGuard {
         wdot.safeTransferFrom(msg.sender, address(this), amount);
 
         emit CollateralDeposited(msg.sender, amount);
+    }
+
+    // ============ Events ============
+
+    /// @notice Emitted by the off-chain monitoring agent when a user's health factor is at risk
+    /// @param user          The at-risk borrower
+    /// @param healthFactor  The health factor at warning time (18 decimals, < 1.3e18)
+    /// @param timestamp     Block timestamp of the warning
+    event HealthWarning(address indexed user, uint256 healthFactor, uint256 timestamp);
+
+    /// @notice Called by the off-chain agent to emit an on-chain warning for an at-risk position.
+    ///         Anyone can call this — but a 1-hour per-user cooldown prevents spam.
+    /// @param user Address of the borrower to warn
+    function warnUser(address user) external {
+        (, , uint256 hf) = this.getUserPosition(user);
+        require(hf < WARNING_THRESHOLD, "LendingPool: position is not at risk");
+        require(
+            block.timestamp >= lastWarning[user] + WARNING_COOLDOWN,
+            "LendingPool: warning cooldown active"
+        );
+        lastWarning[user] = block.timestamp;
+        emit HealthWarning(user, hf, block.timestamp);
     }
 
     /// @notice Borrow stablecoin against deposited WDOT collateral.

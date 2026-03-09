@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { BrowserProvider, Contract, parseUnits, formatUnits } from "ethers";
 
 // ── Deployed contract addresses (Paseo Asset Hub testnet) ─────────────────────
-const LENDING_POOL_ADDRESS = "0xBeC89e432e8A85CDcb0220420C3d7D52E210A163";
+const LENDING_POOL_ADDRESS = "0xA7b4191aDE779bD96BCeF291cd4d809A7cd69b5B";
 const WDOT_ADDRESS         = "0x9bDd7B1019E1C622b713679F24aA460fe17d16e9";
 const USDC_ADDRESS         = "0xb924Dc33Ceaacbde696ED5EC3A70a6b6576c013c";
 
@@ -14,6 +14,9 @@ const POOL_ABI = [
   "function liquidate(address borrower) external",
   "function getHealthFactor(address user) external view returns (uint256)",
   "function getUserPosition(address user) external view returns (uint256 collateral, uint256 debt, uint256 healthFactor)",
+  "function warnUser(address user) external",
+  "function lastWarning(address user) external view returns (uint256)",
+  "event HealthWarning(address indexed user, uint256 healthFactor, uint256 timestamp)",
 ];
 
 const ERC20_ABI = [
@@ -36,8 +39,8 @@ interface Position {
   usdcBalance: string;
 }
 
-// ── DotLend Logo SVG ──────────────────────────────────────────────────────────
-function DotLendLogo({ size = 40 }: { size?: number }) {
+// ── NovaDot Logo SVG ────────────────────────────────────────────────────────────────────
+function NovaDotLogo({ size = 40 }: { size?: number }) {
   const id = "dlg";
   return (
     <svg width={size} height={size} viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -70,6 +73,10 @@ function DotLendLogo({ size = 40 }: { size?: number }) {
   );
 }
 
+// ── Toast System ────────────────────────────────────────────────────────────────
+type ToastType = "success" | "error" | "warning" | "info";
+interface Toast { id: number; type: ToastType; title: string; message?: string; }
+
 export default function App(): React.ReactElement {
   const [account, setAccount]           = useState<string>("");
   const [position, setPosition]         = useState<Position | null>(null);
@@ -77,19 +84,37 @@ export default function App(): React.ReactElement {
   const [amount, setAmount]             = useState<string>("");
   const [borrowerAddr, setBorrowerAddr] = useState<string>("");
   const [loading, setLoading]           = useState<boolean>(false);
-  const [txHash, setTxHash]             = useState<string>("");
-  const [error, setError]               = useState<string>("");
   const [refreshing, setRefreshing]     = useState<boolean>(false);
+  const [walletMenu, setWalletMenu]     = useState<boolean>(false);
+  const [toasts, setToasts]             = useState<Toast[]>([]);
+  const toastId                         = useRef(0);
+
+  function addToast(type: ToastType, title: string, message?: string) {
+    const id = ++toastId.current;
+    setToasts(prev => [...prev, { id, type, title, message }]);
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 6000);
+  }
+  function removeToast(id: number) { setToasts(prev => prev.filter(t => t.id !== id)); }
 
   async function connectWallet() {
     if (!window.ethereum) { alert("MetaMask not detected."); return; }
-    setError("");
     try {
       const provider = getProvider();
       await provider.send("eth_requestAccounts", []);
       const signer = await provider.getSigner();
       setAccount(await signer.getAddress());
-    } catch (e: unknown) { setError(e instanceof Error ? e.message : String(e)); }
+    } catch (e: unknown) { addToast("error", "Connection failed", e instanceof Error ? e.message : String(e)); }
+  }
+
+  async function disconnectWallet() {
+    try {
+      // Revoke MetaMask permissions (supported in MetaMask v11+)
+      await (window.ethereum as { request: (args: { method: string; params?: unknown[] }) => Promise<unknown> })
+        .request({ method: "wallet_revokePermissions", params: [{ eth_accounts: {} }] });
+    } catch { /* older MetaMask versions may not support this — no-op */ }
+    setAccount("");
+    setPosition(null);
+    setWalletMenu(false);
   }
 
   const fetchPosition = useCallback(async () => {
@@ -110,11 +135,60 @@ export default function App(): React.ReactElement {
         wdotBalance:  parseFloat(formatUnits(wdotBal, 18)).toFixed(4),
         usdcBalance:  parseFloat(formatUnits(usdcBal, 6)).toFixed(2),
       });
-    } catch (e: unknown) { setError(e instanceof Error ? e.message : String(e)); }
+    } catch (e: unknown) { addToast("error", "Failed to load position", e instanceof Error ? e.message : String(e)); }
     finally { setRefreshing(false); }
   }, [account]);
 
   useEffect(() => { if (account) fetchPosition(); }, [account, fetchPosition]);
+
+  // ── Embedded AI health monitor — runs in the browser every 30s ─────────────
+  // (Polkadot RPC does not support eth_newFilter event subscriptions, so
+  //  we poll and set the warning state directly instead of using pool.on())
+  useEffect(() => {
+    if (!account || !window.ethereum) return;
+
+    const WARNING_THRESHOLD = 1.3;
+    const COOLDOWN_S        = 3600;
+    let warnedThisSession   = false;
+
+    async function checkAndWarn() {
+      try {
+        const provider = getProvider();
+        const pool     = new Contract(LENDING_POOL_ADDRESS, POOL_ABI, provider);
+
+        const [, debt, hfRaw] = await pool.getUserPosition(account);
+        if (debt === 0n) { warnedThisSession = false; return; }
+
+        const hf = parseFloat(formatUnits(hfRaw, 18));
+        if (hf >= WARNING_THRESHOLD) { warnedThisSession = false; return; }
+
+        // Show warning toast (once per session until it resolves)
+        if (!warnedThisSession) {
+          warnedThisSession = true;
+          addToast("warning",
+            `⚠️ Position at Risk — HF ${hf.toFixed(4)}`,
+            "Your health factor is below 1.3. Add collateral or repay debt to avoid liquidation."
+          );
+        }
+
+        // Emit on-chain warning if cooldown passed
+        const lastWarn = await pool.lastWarning(account);
+        const elapsedS = Math.floor(Date.now() / 1000) - Number(lastWarn);
+        if (elapsedS >= COOLDOWN_S) {
+          try {
+            const signer    = await getProvider().getSigner();
+            const poolWrite = new Contract(LENDING_POOL_ADDRESS, POOL_ABI, signer);
+            const tx        = await poolWrite.warnUser(account);
+            await tx.wait();
+          } catch { /* silent */ }
+        }
+      } catch { /* network error — silent */ }
+    }
+
+    checkAndWarn();
+    const interval = setInterval(checkAndWarn, 30_000);
+    return () => clearInterval(interval);
+  }, [account]);
 
   async function approveAndCall(
     tokenAddress: string,
@@ -122,33 +196,42 @@ export default function App(): React.ReactElement {
     rawAmount: string,
     action: (signer: Awaited<ReturnType<BrowserProvider["getSigner"]>>) => Promise<{ hash: string }>
   ) {
-    setLoading(true); setError(""); setTxHash("");
+    setLoading(true);
     try {
       const signer = await getProvider().getSigner();
       const token  = new Contract(tokenAddress, ERC20_ABI, signer);
       const parsed = parseUnits(rawAmount, decimals);
+      addToast("info", "Approving token…", "Please confirm in MetaMask");
       const approveTx = await token.approve(LENDING_POOL_ADDRESS, parsed);
       await approveTx.wait();
       const tx = await action(signer);
-      setTxHash(tx.hash);
-      await (tx as unknown as { wait: () => Promise<unknown> }).wait();
+      addToast("info", "Transaction submitted", "Waiting for confirmation…");
+      const receipt = await getProvider().waitForTransaction(tx.hash);
+      if (!receipt || receipt.status === 0) throw new Error("Transaction reverted");
+      addToast("success", "Transaction confirmed! ✨", tx.hash);
       await fetchPosition();
       setAmount("");
-    } catch (e: unknown) { setError(e instanceof Error ? e.message : String(e)); }
-    finally { setLoading(false); }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      addToast("error", "Transaction failed", msg.length > 120 ? msg.slice(0, 120) + "…" : msg);
+    } finally { setLoading(false); }
   }
 
   async function callPool(action: (signer: Awaited<ReturnType<BrowserProvider["getSigner"]>>) => Promise<{ hash: string }>) {
-    setLoading(true); setError(""); setTxHash("");
+    setLoading(true);
     try {
       const signer = await getProvider().getSigner();
       const tx = await action(signer);
-      setTxHash(tx.hash);
-      await (tx as unknown as { wait: () => Promise<unknown> }).wait();
+      addToast("info", "Transaction submitted", "Waiting for confirmation…");
+      const receipt = await getProvider().waitForTransaction(tx.hash);
+      if (!receipt || receipt.status === 0) throw new Error("Transaction reverted");
+      addToast("success", "Transaction confirmed! ✨", tx.hash);
       await fetchPosition();
       setAmount(""); setBorrowerAddr("");
-    } catch (e: unknown) { setError(e instanceof Error ? e.message : String(e)); }
-    finally { setLoading(false); }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      addToast("error", "Transaction failed", msg.length > 120 ? msg.slice(0, 120) + "…" : msg);
+    } finally { setLoading(false); }
   }
 
   const handleDeposit  = () => approveAndCall(WDOT_ADDRESS, 18, amount, async (s) => new Contract(LENDING_POOL_ADDRESS, POOL_ABI, s).depositCollateral(parseUnits(amount, 18)));
@@ -158,26 +241,24 @@ export default function App(): React.ReactElement {
   const handleLiquidate = () => callPool(async (s) => new Contract(LENDING_POOL_ADDRESS, POOL_ABI, s).liquidate(borrowerAddr));
 
   async function handleFaucet(tokenAddress: string, tokenName: string) {
-    setLoading(true); setError(""); setTxHash("");
+    setLoading(true);
     try {
       const signer = await getProvider().getSigner();
       const token = new Contract(tokenAddress, ERC20_ABI, signer);
-      
+
       const last = await token.lastMint(account);
       const now = Math.floor(Date.now() / 1000);
-      if (now < Number(last) + 86400) {
-        throw new Error(`Faucet is on a 24-hour cooldown. Please try again later.`);
-      }
+      if (now < Number(last) + 86400) throw new Error("Faucet is on a 24-hour cooldown. Please try again later.");
 
+      addToast("info", `Minting ${tokenName}…`, "Please confirm in MetaMask");
       const tx = await token.faucet();
-      setTxHash(tx.hash);
       await tx.wait();
+      addToast("success", `${tokenName} received! 🎉`, `${tokenName === "WDOT" ? "100 WDOT" : "1,000 USDC"} added to your wallet`);
       await fetchPosition();
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoading(false);
-    }
+      const msg = e instanceof Error ? e.message : String(e);
+      addToast("error", "Faucet failed", msg.length > 120 ? msg.slice(0, 120) + "…" : msg);
+    } finally { setLoading(false); }
   }
 
   function hfColor(hf: string) {
@@ -238,8 +319,31 @@ export default function App(): React.ReactElement {
           display: flex; align-items: center; gap: 8px;
           padding: 8px 14px; border-radius: 12px;
           background: rgba(240,40,122,.08); border: 1px solid rgba(240,40,122,.2);
-          font-size: 13px; color: #c97ab0;
+          font-size: 13px; color: #c97ab0; cursor: pointer; position: relative;
+          transition: background .2s;
         }
+        .acct-badge:hover { background: rgba(240,40,122,.14); }
+        .wallet-menu {
+          position: absolute; top: calc(100% + 8px); right: 0;
+          background: #1a0a24; border: 1px solid rgba(240,40,122,.25);
+          border-radius: 14px; padding: 8px; min-width: 230px;
+          box-shadow: 0 12px 40px rgba(0,0,0,.5); z-index: 100;
+          animation: fadeIn .15s ease;
+        }
+        @keyframes fadeIn { from { opacity:0; transform:translateY(-4px); } to { opacity:1; transform:translateY(0); } }
+        .wallet-addr {
+          font-size: 11px; color: #7a5a88; padding: 8px 10px 4px;
+          word-break: break-all; font-family: monospace; line-height: 1.5;
+        }
+        .wallet-menu hr { border: none; border-top: 1px solid rgba(240,40,122,.1); margin: 6px 0; }
+        .wallet-menu-btn {
+          width: 100%; padding: 8px 10px; border: none; border-radius: 8px;
+          background: none; color: #c97ab0; font-size: 13px; font-weight: 500;
+          cursor: pointer; text-align: left; transition: background .15s, color .15s;
+          display: flex; align-items: center; gap: 8px;
+        }
+        .wallet-menu-btn:hover { background: rgba(240,40,122,.1); color: #f0e8f5; }
+        .wallet-menu-btn.danger:hover { background: rgba(248,113,113,.1); color: #f87171; }
         .pulse { width: 8px; height: 8px; border-radius: 50%; background: #F0287A; animation: pulse 2s ease infinite; }
         @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.5;transform:scale(.8)} }
 
@@ -333,7 +437,54 @@ export default function App(): React.ReactElement {
           border-radius: 12px; padding: 12px 16px; font-size: 12px; color: #f87171; word-break: break-all;
         }
 
+        /* AI Warning Banner */
+        .warn-banner {
+          display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+          background: linear-gradient(135deg, rgba(251,146,60,.12), rgba(240,40,122,.10));
+          border: 1px solid rgba(251,146,60,.45);
+          border-radius: 16px; padding: 16px 20px; margin-bottom: 20px;
+          animation: warnPulse 2.5s ease-in-out infinite;
+        }
+        @keyframes warnPulse {
+          0%,100% { box-shadow: 0 0 0 0 rgba(251,146,60,0); }
+          50%      { box-shadow: 0 0 18px 4px rgba(251,146,60,.18); }
+        }
+        .warn-icon { font-size: 26px; flex-shrink: 0; margin-top: 2px; }
+        .warn-body { flex: 1; }
+        .warn-title { font-size: 14px; font-weight: 800; color: #fb923c; margin-bottom: 4px; }
+        .warn-msg   { font-size: 12px; color: #c97ab0; line-height: 1.6; }
+        .warn-close { background: none; border: none; color: #7a5a88; cursor: pointer; font-size: 18px; padding: 0; flex-shrink: 0; }
+        .warn-close:hover { color: #fb923c; }
+
         @keyframes spin { to { transform: rotate(360deg); } }
+        .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid rgba(255,255,255,.3); border-top-color: #fff; border-radius: 50%; animation: spin .7s linear infinite; vertical-align: middle; margin-right: 8px; }
+
+        /* Toast Notifications */
+        .toast-container {
+          position: fixed; top: 24px; right: 24px; z-index: 9999;
+          display: flex; flex-direction: column; gap: 10px; max-width: 360px;
+        }
+        @keyframes slideIn {
+          from { opacity: 0; transform: translateX(110%); }
+          to   { opacity: 1; transform: translateX(0); }
+        }
+        .toast {
+          display: flex; align-items: flex-start; gap: 12px;
+          padding: 14px 16px; border-radius: 14px; cursor: default;
+          backdrop-filter: blur(12px); animation: slideIn .25s ease;
+          box-shadow: 0 8px 32px rgba(0,0,0,.4);
+        }
+        .toast-success { background: rgba(74,222,128,.12); border: 1px solid rgba(74,222,128,.3); }
+        .toast-error   { background: rgba(248,113,113,.12); border: 1px solid rgba(248,113,113,.3); }
+        .toast-warning { background: rgba(251,146,60,.12); border: 1px solid rgba(251,146,60,.3); }
+        .toast-info    { background: rgba(96,165,250,.12); border: 1px solid rgba(96,165,250,.3); }
+        .toast-icon  { font-size: 18px; flex-shrink: 0; margin-top: 1px; }
+        .toast-body  { flex: 1; min-width: 0; }
+        .toast-title { font-size: 13px; font-weight: 700; color: #f0e8f5; margin-bottom: 2px; }
+        .toast-msg   { font-size: 11px; color: #b07aa8; line-height: 1.5; word-break: break-all; }
+        .toast-msg a { color: #60a5fa; text-decoration: underline; }
+        .toast-close { background: none; border: none; color: #7a5a88; cursor: pointer; font-size: 16px; padding: 0; flex-shrink: 0; line-height: 1; transition: color .15s; }
+        .toast-close:hover { color: #f0e8f5; }
         .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid rgba(255,255,255,.3); border-top-color: #fff; border-radius: 50%; animation: spin .7s linear infinite; vertical-align: middle; margin-right: 8px; }
 
         /* Landing */
@@ -353,21 +504,44 @@ export default function App(): React.ReactElement {
         {/* Header */}
         <header className="hdr">
           <div className="brand">
-            <DotLendLogo size={42} />
+            <NovaDotLogo size={42} />
             <div className="brand-text">
-              <h1>DotLend</h1>
+              <h1>NovaDot</h1>
               <p>Polkadot Hub EVM · Paseo Testnet</p>
             </div>
           </div>
           {!account
             ? <button className="connect-btn" onClick={connectWallet}>Connect Wallet</button>
-            : <div className="acct-badge"><span className="pulse" />{account.slice(0,6)}…{account.slice(-4)}</div>
+            : (
+              <div className="acct-badge" onClick={() => setWalletMenu(m => !m)}>
+                <span className="pulse" />
+                {account.slice(0,6)}…{account.slice(-4)}
+                <span style={{ fontSize: 10, marginLeft: 2, opacity: 0.6 }}>▾</span>
+                {walletMenu && (
+                  <div className="wallet-menu" onClick={e => e.stopPropagation()}>
+                    <div className="wallet-addr">{account}</div>
+                    <hr />
+                    <button className="wallet-menu-btn" onClick={() => { navigator.clipboard.writeText(account); setWalletMenu(false); }}>
+                      📋 Copy Address
+                    </button>
+                    <button className="wallet-menu-btn" onClick={() => window.open(`https://blockscout-passet-hub.parity-testnet.parity.io/address/${account}`, "_blank")}>
+                      🔍 View on Explorer
+                    </button>
+                    <hr />
+                    <button className="wallet-menu-btn danger" onClick={disconnectWallet}>
+                      🔌 Disconnect
+                    </button>
+                  </div>
+                )}
+              </div>
+            )
           }
         </header>
 
+
         {!account ? (
           <div className="landing">
-            <DotLendLogo size={80} />
+            <NovaDotLogo size={80} />
             <h2>Stablecoin Micro-Lending</h2>
             <p>Deposit WDOT as collateral and borrow MockUSDC against it.<br />Simple interest · Aave-style health factor · Instant liquidations.</p>
             <div className="chips">
@@ -426,7 +600,7 @@ export default function App(): React.ReactElement {
               <div className="tabs">
                 {tabs.map(t => (
                   <button key={t.id} className={`tab${activeTab === t.id ? " active" : ""}`}
-                    onClick={() => { setActiveTab(t.id); setAmount(""); setError(""); setTxHash(""); }}>
+                    onClick={() => { setActiveTab(t.id); setAmount(""); }}>
                     {t.icon} {t.label}
                   </button>
                 ))}
@@ -461,17 +635,33 @@ export default function App(): React.ReactElement {
                 >
                   {loading ? <><span className="spinner" />Processing…</> : cfg.title}
                 </button>
-
-                <div className="feedback">
-                  {txHash && (
-                    <div className="tx-ok">✅ Confirmed! <a href={`https://blockscout.polkadothub.io/tx/${txHash}`} target="_blank" rel="noreferrer">{txHash.slice(0, 22)}…</a></div>
-                  )}
-                  {error && <div className="tx-err">⚠️ {error.length > 200 ? error.slice(0, 200) + "…" : error}</div>}
-                </div>
               </div>
             </div>
           </>
         )}
+      </div>
+
+      {/* Toast Notifications */}
+      <div className="toast-container">
+        {toasts.map(t => (
+          <div key={t.id} className={`toast toast-${t.type}`}>
+            <span className="toast-icon">
+              {t.type === "success" ? "✅" : t.type === "error" ? "🛑" : t.type === "warning" ? "⚠️" : "ℹ️"}
+            </span>
+            <div className="toast-body">
+              <div className="toast-title">{t.title}</div>
+              {t.message && (
+                <div className="toast-msg">
+                  {t.type === "success" && t.message.startsWith("0x")
+                    ? <a href={`https://blockscout-passet-hub.parity-testnet.parity.io/tx/${t.message}`} target="_blank" rel="noreferrer">View on Blockscout 🔗</a>
+                    : t.message
+                  }
+                </div>
+              )}
+            </div>
+            <button className="toast-close" onClick={() => removeToast(t.id)}>✕</button>
+          </div>
+        ))}
       </div>
     </>
   );

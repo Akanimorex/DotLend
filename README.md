@@ -1,4 +1,4 @@
-# DotLend — Stablecoin Micro-Lending Protocol on Polkadot Hub EVM
+# NovaDot — Stablecoin Micro-Lending Protocol on Polkadot Hub EVM
 
 A production-ready DeFi micro-lending protocol written in Solidity. Users deposit WDOT as collateral and borrow a
 stablecoin (MockUSDC on testnet, real USDC on mainnet) against it.
@@ -67,7 +67,7 @@ interest = principal × 10% × timeElapsed / (365 days × 100)
 
 ```bash
 git clone <repo-url>
-cd stbl-lend
+cd novadot
 npm install
 cp .env.example .env
 ```
