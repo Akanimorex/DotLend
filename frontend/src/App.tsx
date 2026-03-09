@@ -174,6 +174,8 @@ export default function App(): React.ReactElement {
     const WARNING_THRESHOLD = 1.3;
     const COOLDOWN_S        = 3600;
     let warnedThisSession   = false;
+    let warnTxInFlight      = false;      // prevents duplicate MetaMask prompts
+    let lastSubmittedAt     = 0;          // local timestamp of last warnUser() submission
 
     async function checkAndWarn() {
       try {
@@ -183,21 +185,38 @@ export default function App(): React.ReactElement {
         if (debt === 0n) { warnedThisSession = false; return; }
         const hf = parseFloat(formatUnits(hfRaw, 18));
         if (hf >= WARNING_THRESHOLD) { warnedThisSession = false; return; }
+
+        // Show the toast once per session
         if (!warnedThisSession) {
           warnedThisSession = true;
           addToast("warning", `⚠️ Position at Risk — HF ${hf.toFixed(4)}`,
             "Your health factor is below 1.3. Add collateral or repay debt to avoid liquidation.");
         }
+
+        // Skip if a warnUser tx is already pending in MetaMask
+        if (warnTxInFlight) return;
+
+        // Skip if we already submitted within the cooldown window (local guard —
+        // avoids relying on on-chain lastWarning which is stale while tx is pending)
+        const nowS = Math.floor(Date.now() / 1000);
+        if (nowS - lastSubmittedAt < COOLDOWN_S) return;
+
+        // Double-check the on-chain cooldown too
         const lastWarn = await pool.lastWarning(account);
-        const elapsedS = Math.floor(Date.now() / 1000) - Number(lastWarn);
-        if (elapsedS >= COOLDOWN_S) {
-          try {
-            const signer    = await getProvider().getSigner();
-            const poolWrite = new Contract(LENDING_POOL_ADDRESS, POOL_ABI, signer);
-            const tx        = await poolWrite.warnUser(account);
-            await tx.wait();
-          } catch { /* silent */ }
-        }
+        const elapsedS = nowS - Number(lastWarn);
+        if (elapsedS < COOLDOWN_S) return;
+
+        // All clear — submit the on-chain warning
+        warnTxInFlight  = true;
+        lastSubmittedAt = nowS;           // mark locally before MetaMask opens
+        try {
+          const signer    = await getProvider().getSigner();
+          const poolWrite = new Contract(LENDING_POOL_ADDRESS, POOL_ABI, signer);
+          const tx        = await poolWrite.warnUser(account);
+          await tx.wait();
+        } catch { /* user rejected or tx reverted — silent */ }
+        finally { warnTxInFlight = false; }
+
       } catch { /* network error — silent */ }
     }
 
