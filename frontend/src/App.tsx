@@ -5,6 +5,7 @@ import { BrowserProvider, Contract, parseUnits, formatUnits } from "ethers";
 const LENDING_POOL_ADDRESS = "0xA7b4191aDE779bD96BCeF291cd4d809A7cd69b5B";
 const WDOT_ADDRESS         = "0x9bDd7B1019E1C622b713679F24aA460fe17d16e9";
 const USDC_ADDRESS         = "0xb924Dc33Ceaacbde696ED5EC3A70a6b6576c013c";
+const ORACLE_ADDRESS       = "0x0675BE6173C507eAaC6c4A2faEc68c6c97fbDC3e";
 
 const POOL_ABI = [
   "function depositCollateral(uint256 amount) external",
@@ -25,6 +26,8 @@ const ERC20_ABI = [
   "function faucet() external",
   "function lastMint(address user) external view returns (uint256)"
 ];
+
+const ORACLE_ABI = ["function getPrice() external view returns (uint256)"];
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function getProvider() { return new BrowserProvider(window.ethereum as any); }
@@ -109,6 +112,7 @@ export default function App(): React.ReactElement {
   const [refreshing, setRefreshing]     = useState<boolean>(false);
   const [walletMenu, setWalletMenu]     = useState<boolean>(false);
   const [toasts, setToasts]             = useState<Toast[]>([]);
+  const [wdotPrice, setWdotPrice]       = useState<number | null>(null);
   const toastId                         = useRef(0);
 
   function addToast(type: ToastType, title: string, message?: string) {
@@ -141,12 +145,16 @@ export default function App(): React.ReactElement {
     setRefreshing(true);
     try {
       const provider = getProvider();
-      const pool = new Contract(LENDING_POOL_ADDRESS, POOL_ABI, provider);
-      const wdot = new Contract(WDOT_ADDRESS, ERC20_ABI, provider);
-      const usdc = new Contract(USDC_ADDRESS, ERC20_ABI, provider);
+      const pool   = new Contract(LENDING_POOL_ADDRESS, POOL_ABI, provider);
+      const wdot   = new Contract(WDOT_ADDRESS, ERC20_ABI, provider);
+      const usdc   = new Contract(USDC_ADDRESS, ERC20_ABI, provider);
+      const oracle = new Contract(ORACLE_ADDRESS, ORACLE_ABI, provider);
       const [collateral, debt, hf] = await pool.getUserPosition(account);
-      const wdotBal = await wdot.balanceOf(account);
-      const usdcBal = await usdc.balanceOf(account);
+      const wdotBal  = await wdot.balanceOf(account);
+      const usdcBal  = await usdc.balanceOf(account);
+      const rawPrice = await oracle.getPrice(); // 8 decimals
+      const price    = Number(rawPrice) / 1e8;
+      setWdotPrice(price);
       setPosition({
         collateral:   formatUnits(collateral, 18),
         debt:         formatUnits(debt, 6),
@@ -710,6 +718,19 @@ export default function App(): React.ReactElement {
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {wdotPrice !== null && (
+              <div style={{
+                display: "flex", alignItems: "center", gap: 6,
+                padding: "5px 12px", borderRadius: 10,
+                background: "rgba(240,40,122,0.07)",
+                border: "1px solid rgba(240,40,122,0.18)",
+                fontSize: 12, fontWeight: 700,
+                color: "#e0a0d0", fontFamily: "'JetBrains Mono', monospace",
+              }}>
+                <span style={{ fontSize: 10 }}>🔮</span>
+                WDOT <span style={{ color: "#F0287A", marginLeft: 4 }}>${wdotPrice.toFixed(2)}</span>
+              </div>
+            )}
             <span className="testnet-pill">TESTNET</span>
             {!account
               ? <button className="connect-btn" onClick={connectWallet}>Connect Wallet</button>
@@ -783,6 +804,11 @@ export default function App(): React.ReactElement {
                   <div className="bento-lbl"><span className="bento-lbl-dot"/>Collateral</div>
                   <div className="bento-val">{parseFloat(position.collateral).toFixed(2)}</div>
                   <div className="bento-sub">WDOT deposited</div>
+                  {wdotPrice !== null && (
+                    <div style={{ marginTop: 8, fontSize: 13, fontWeight: 700, color: "#c97ab0", fontFamily: "'JetBrains Mono', monospace" }}>
+                      ≈ ${(parseFloat(position.collateral) * wdotPrice).toFixed(2)} USD
+                    </div>
+                  )}
                 </div>
 
                 <div className="bento-card">
