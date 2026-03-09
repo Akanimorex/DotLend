@@ -39,9 +39,9 @@ interface Position {
   usdcBalance: string;
 }
 
-// ── NovaDot Logo SVG ────────────────────────────────────────────────────────────────────
+// ── NovaDot Logo SVG ─────────────────────────────────────────────────────────
 function NovaDotLogo({ size = 40 }: { size?: number }) {
-  const id = "dlg";
+  const id = "ndg";
   return (
     <svg width={size} height={size} viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
       <defs>
@@ -50,7 +50,6 @@ function NovaDotLogo({ size = 40 }: { size?: number }) {
           <stop offset="100%" stopColor="#8B2A8B" />
         </linearGradient>
       </defs>
-      {/* Dot grid — 5 cols × 5 rows, with organic edge trimming matching logo */}
       {[
         [1,0],[2,0],
         [0,1],[1,1],[2,1],[3,1],
@@ -60,20 +59,43 @@ function NovaDotLogo({ size = 40 }: { size?: number }) {
       ].map(([cx, cy], i) => (
         <circle key={i} cx={10 + cx * 20} cy={10 + cy * 20} r={8} fill={`url(#${id})`} />
       ))}
-      {/* Arrow: up-right pointing, bold */}
-      <path
-        d="M52 22 L78 22 L78 48"
-        stroke={`url(#${id})`} strokeWidth="11" strokeLinecap="round" strokeLinejoin="round" fill="none"
-      />
-      <path
-        d="M40 60 L76 24"
-        stroke={`url(#${id})`} strokeWidth="11" strokeLinecap="round" fill="none"
-      />
+      <path d="M52 22 L78 22 L78 48" stroke={`url(#${id})`} strokeWidth="11" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+      <path d="M40 60 L76 24"         stroke={`url(#${id})`} strokeWidth="11" strokeLinecap="round" fill="none" />
     </svg>
   );
 }
 
-// ── Toast System ────────────────────────────────────────────────────────────────
+// ── Health Factor Arc Gauge ───────────────────────────────────────────────────
+function HFGauge({ value }: { value: string }) {
+  const isInfinite = value === "∞";
+  const num        = isInfinite ? 3 : Math.min(parseFloat(value), 3);
+  const pct        = Math.max(0, Math.min(1, (num - 0) / 3));
+  const color      = num >= 1.5 ? "#4ade80" : num >= 1.2 ? "#facc15" : "#f87171";
+  const label      = num >= 1.5 ? "SAFE" : num >= 1.2 ? "WARNING" : "DANGER";
+
+  const r = 36, cx = 48, cy = 48;
+  const circ = Math.PI * r;  // half circle
+  const dash  = circ * pct;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+      <svg width={96} height={56} viewBox="0 0 96 56">
+        {/* Track */}
+        <path d={`M ${cx - r} ${cy} A ${r} ${r} 0 0 1 ${cx + r} ${cy}`}
+          fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="8" strokeLinecap="round" />
+        {/* Fill */}
+        <path d={`M ${cx - r} ${cy} A ${r} ${r} 0 0 1 ${cx + r} ${cy}`}
+          fill="none" stroke={color} strokeWidth="8" strokeLinecap="round"
+          strokeDasharray={`${dash} ${circ}`}
+          style={{ filter: `drop-shadow(0 0 6px ${color}80)`, transition: "stroke-dasharray 0.6s ease" }} />
+      </svg>
+      <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 22, fontWeight: 800, color, lineHeight: 1, marginTop: -10 }}>{value}</div>
+      <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: 1.5, color: color + "aa", textTransform: "uppercase" }}>{isInfinite ? "NO DEBT" : label}</div>
+    </div>
+  );
+}
+
+// ── Toast System ───────────────────────────────────────────────────────────────
 type ToastType = "success" | "error" | "warning" | "info";
 interface Toast { id: number; type: ToastType; title: string; message?: string; }
 
@@ -108,13 +130,10 @@ export default function App(): React.ReactElement {
 
   async function disconnectWallet() {
     try {
-      // Revoke MetaMask permissions (supported in MetaMask v11+)
       await (window.ethereum as { request: (args: { method: string; params?: unknown[] }) => Promise<unknown> })
         .request({ method: "wallet_revokePermissions", params: [{ eth_accounts: {} }] });
-    } catch { /* older MetaMask versions may not support this — no-op */ }
-    setAccount("");
-    setPosition(null);
-    setWalletMenu(false);
+    } catch { /* older MetaMask versions may not support this */ }
+    setAccount(""); setPosition(null); setWalletMenu(false);
   }
 
   const fetchPosition = useCallback(async () => {
@@ -142,11 +161,8 @@ export default function App(): React.ReactElement {
   useEffect(() => { if (account) fetchPosition(); }, [account, fetchPosition]);
 
   // ── Embedded AI health monitor — runs in the browser every 30s ─────────────
-  // (Polkadot RPC does not support eth_newFilter event subscriptions, so
-  //  we poll and set the warning state directly instead of using pool.on())
   useEffect(() => {
     if (!account || !window.ethereum) return;
-
     const WARNING_THRESHOLD = 1.3;
     const COOLDOWN_S        = 3600;
     let warnedThisSession   = false;
@@ -155,23 +171,15 @@ export default function App(): React.ReactElement {
       try {
         const provider = getProvider();
         const pool     = new Contract(LENDING_POOL_ADDRESS, POOL_ABI, provider);
-
         const [, debt, hfRaw] = await pool.getUserPosition(account);
         if (debt === 0n) { warnedThisSession = false; return; }
-
         const hf = parseFloat(formatUnits(hfRaw, 18));
         if (hf >= WARNING_THRESHOLD) { warnedThisSession = false; return; }
-
-        // Show warning toast (once per session until it resolves)
         if (!warnedThisSession) {
           warnedThisSession = true;
-          addToast("warning",
-            `⚠️ Position at Risk — HF ${hf.toFixed(4)}`,
-            "Your health factor is below 1.3. Add collateral or repay debt to avoid liquidation."
-          );
+          addToast("warning", `⚠️ Position at Risk — HF ${hf.toFixed(4)}`,
+            "Your health factor is below 1.3. Add collateral or repay debt to avoid liquidation.");
         }
-
-        // Emit on-chain warning if cooldown passed
         const lastWarn = await pool.lastWarning(account);
         const elapsedS = Math.floor(Date.now() / 1000) - Number(lastWarn);
         if (elapsedS >= COOLDOWN_S) {
@@ -191,9 +199,7 @@ export default function App(): React.ReactElement {
   }, [account]);
 
   async function approveAndCall(
-    tokenAddress: string,
-    decimals: number,
-    rawAmount: string,
+    tokenAddress: string, decimals: number, rawAmount: string,
     action: (signer: Awaited<ReturnType<BrowserProvider["getSigner"]>>) => Promise<{ hash: string }>
   ) {
     setLoading(true);
@@ -209,8 +215,7 @@ export default function App(): React.ReactElement {
       const receipt = await getProvider().waitForTransaction(tx.hash);
       if (!receipt || receipt.status === 0) throw new Error("Transaction reverted");
       addToast("success", "Transaction confirmed! ✨", tx.hash);
-      await fetchPosition();
-      setAmount("");
+      await fetchPosition(); setAmount("");
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       addToast("error", "Transaction failed", msg.length > 120 ? msg.slice(0, 120) + "…" : msg);
@@ -226,18 +231,17 @@ export default function App(): React.ReactElement {
       const receipt = await getProvider().waitForTransaction(tx.hash);
       if (!receipt || receipt.status === 0) throw new Error("Transaction reverted");
       addToast("success", "Transaction confirmed! ✨", tx.hash);
-      await fetchPosition();
-      setAmount(""); setBorrowerAddr("");
+      await fetchPosition(); setAmount(""); setBorrowerAddr("");
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       addToast("error", "Transaction failed", msg.length > 120 ? msg.slice(0, 120) + "…" : msg);
     } finally { setLoading(false); }
   }
 
-  const handleDeposit  = () => approveAndCall(WDOT_ADDRESS, 18, amount, async (s) => new Contract(LENDING_POOL_ADDRESS, POOL_ABI, s).depositCollateral(parseUnits(amount, 18)));
-  const handleBorrow   = () => callPool(async (s) => new Contract(LENDING_POOL_ADDRESS, POOL_ABI, s).borrowStablecoin(parseUnits(amount, 6)));
-  const handleRepay    = () => approveAndCall(USDC_ADDRESS, 6, amount, async (s) => new Contract(LENDING_POOL_ADDRESS, POOL_ABI, s).repayLoan(parseUnits(amount, 6)));
-  const handleWithdraw = () => callPool(async (s) => new Contract(LENDING_POOL_ADDRESS, POOL_ABI, s).withdrawCollateral(parseUnits(amount, 18)));
+  const handleDeposit   = () => approveAndCall(WDOT_ADDRESS, 18, amount, async (s) => new Contract(LENDING_POOL_ADDRESS, POOL_ABI, s).depositCollateral(parseUnits(amount, 18)));
+  const handleBorrow    = () => callPool(async (s) => new Contract(LENDING_POOL_ADDRESS, POOL_ABI, s).borrowStablecoin(parseUnits(amount, 6)));
+  const handleRepay     = () => approveAndCall(USDC_ADDRESS, 6, amount, async (s) => new Contract(LENDING_POOL_ADDRESS, POOL_ABI, s).repayLoan(parseUnits(amount, 6)));
+  const handleWithdraw  = () => callPool(async (s) => new Contract(LENDING_POOL_ADDRESS, POOL_ABI, s).withdrawCollateral(parseUnits(amount, 18)));
   const handleLiquidate = () => callPool(async (s) => new Contract(LENDING_POOL_ADDRESS, POOL_ABI, s).liquidate(borrowerAddr));
 
   async function handleFaucet(tokenAddress: string, tokenName: string) {
@@ -245,11 +249,9 @@ export default function App(): React.ReactElement {
     try {
       const signer = await getProvider().getSigner();
       const token = new Contract(tokenAddress, ERC20_ABI, signer);
-
       const last = await token.lastMint(account);
       const now = Math.floor(Date.now() / 1000);
-      if (now < Number(last) + 86400) throw new Error("Faucet is on a 24-hour cooldown. Please try again later.");
-
+      if (now < Number(last) + 86400) throw new Error("Faucet is on a 24-hour cooldown. Try again later.");
       addToast("info", `Minting ${tokenName}…`, "Please confirm in MetaMask");
       const tx = await token.faucet();
       await tx.wait();
@@ -276,7 +278,7 @@ export default function App(): React.ReactElement {
   ];
 
   const tabConfig: Record<Tab, { title: string; desc: string; info: React.ReactNode; unit: string; isLiquidate?: boolean }> = {
-    deposit:   { title: "Deposit WDOT Collateral",  unit: "WDOT", desc: "Lock WDOT to increase your borrowing power. Requires 150% collateral ratio to borrow.", info: <>Your wallet: <b>{position?.wdotBalance ?? "–"} WDOT</b></> },
+    deposit:   { title: "Deposit WDOT Collateral",  unit: "WDOT", desc: "Lock WDOT to increase your borrowing power. Requires 150% collateral ratio to borrow.", info: <>Wallet balance: <b>{position?.wdotBalance ?? "–"} WDOT</b></> },
     borrow:    { title: "Borrow MockUSDC",           unit: "USDC", desc: "Borrow stablecoin against your locked WDOT. Requires ≥ 150% collateral ratio.", info: <>Current debt: <b>{position?.debt ?? "–"} USDC</b></> },
     repay:     { title: "Repay Loan",                unit: "USDC", desc: "Repay principal + accrued interest (10% APR). Overpayment is automatically capped.", info: <>Total owed (approx): <b>{position?.debt ?? "–"} USDC</b></> },
     withdraw:  { title: "Withdraw Collateral",       unit: "WDOT", desc: "Reclaim your WDOT. Position must remain above 150% collateral ratio after withdrawal.", info: <>Deposited: <b>{position?.collateral ?? "–"} WDOT</b></> },
@@ -288,336 +290,578 @@ export default function App(): React.ReactElement {
   return (
     <>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;700&display=swap');
+
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
         body {
           font-family: 'Inter', sans-serif;
-          background: #0a0610;
+          background: #060410;
           min-height: 100vh;
-          color: #f0e8f5;
+          color: #ede8f5;
           overflow-x: hidden;
         }
-        .orb {
-          position: fixed; border-radius: 50%; filter: blur(130px);
-          opacity: 0.18; pointer-events: none; z-index: 0;
-        }
-        .wrap { position: relative; z-index: 1; max-width: 900px; margin: 0 auto; padding: 32px 16px 80px; }
 
-        /* Header */
-        .hdr { display: flex; align-items: center; justify-content: space-between; margin-bottom: 40px; }
-        .brand { display: flex; align-items: center; gap: 12px; }
-        .brand-text h1 { font-size: 22px; font-weight: 800; letter-spacing: -0.5px; background: linear-gradient(90deg,#F0287A,#8B2A8B); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-        .brand-text p  { font-size: 11px; color: #7a5a88; }
-        .connect-btn {
-          padding: 10px 22px;
-          background: linear-gradient(135deg,#F0287A,#8B2A8B);
-          border: none; border-radius: 12px; color: #fff; font-size: 14px; font-weight: 700;
-          cursor: pointer; transition: opacity .2s, transform .15s;
+        /* ── Animated background ── */
+        .bg-mesh {
+          position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none;
         }
-        .connect-btn:hover { opacity: 0.88; transform: translateY(-1px); }
+        .bg-mesh::before {
+          content: '';
+          position: absolute; inset: -50%;
+          background:
+            radial-gradient(ellipse 60% 40% at 20% 30%, rgba(240,40,122,0.18) 0%, transparent 70%),
+            radial-gradient(ellipse 50% 50% at 80% 80%, rgba(139,42,139,0.15) 0%, transparent 70%),
+            radial-gradient(ellipse 40% 60% at 60% 10%, rgba(99,30,160,0.12) 0%, transparent 70%);
+          animation: meshDrift 18s ease-in-out infinite alternate;
+        }
+        @keyframes meshDrift {
+          0%   { transform: translate(0, 0) scale(1); }
+          50%  { transform: translate(-2%, 3%) scale(1.04); }
+          100% { transform: translate(2%, -2%) scale(0.97); }
+        }
+        .bg-grid {
+          position: fixed; inset: 0; z-index: 0; pointer-events: none;
+          background-image:
+            linear-gradient(rgba(240,40,122,0.04) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(240,40,122,0.04) 1px, transparent 1px);
+          background-size: 48px 48px;
+          mask-image: radial-gradient(ellipse 80% 80% at 50% 50%, black 40%, transparent 100%);
+        }
+
+        /* ── Layout ── */
+        .app-wrap {
+          position: relative; z-index: 1;
+          max-width: 960px; margin: 0 auto;
+          padding: 28px 20px 100px;
+        }
+
+        /* ── Header ── */
+        .hdr {
+          display: flex; align-items: center; justify-content: space-between;
+          margin-bottom: 48px;
+          padding: 12px 20px;
+          background: rgba(255,255,255,0.03);
+          border: 1px solid rgba(240,40,122,0.12);
+          border-radius: 20px;
+          backdrop-filter: blur(20px);
+        }
+        .brand { display: flex; align-items: center; gap: 12px; }
+        .brand-name {
+          font-size: 20px; font-weight: 900; letter-spacing: -0.8px;
+          background: linear-gradient(120deg, #F0287A 0%, #c4259f 50%, #8B2A8B 100%);
+          -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        }
+        .brand-tag {
+          font-size: 10px; color: rgba(240,40,122,0.6); font-weight: 500;
+          letter-spacing: 0.5px; margin-top: 1px;
+        }
+        .testnet-pill {
+          padding: 3px 10px; border-radius: 100px;
+          background: rgba(240,40,122,0.1); border: 1px solid rgba(240,40,122,0.2);
+          font-size: 10px; color: #F0287A; font-weight: 700; letter-spacing: 0.5px;
+        }
+
+        .connect-btn {
+          padding: 10px 24px;
+          background: linear-gradient(135deg, #F0287A, #8B2A8B);
+          border: none; border-radius: 12px; color: #fff;
+          font-size: 14px; font-weight: 700; letter-spacing: 0.3px;
+          cursor: pointer; transition: all 0.2s;
+          box-shadow: 0 4px 20px rgba(240,40,122,0.3);
+        }
+        .connect-btn:hover { transform: translateY(-1px); box-shadow: 0 8px 28px rgba(240,40,122,0.45); }
+
         .acct-badge {
           display: flex; align-items: center; gap: 8px;
-          padding: 8px 14px; border-radius: 12px;
-          background: rgba(240,40,122,.08); border: 1px solid rgba(240,40,122,.2);
-          font-size: 13px; color: #c97ab0; cursor: pointer; position: relative;
-          transition: background .2s;
+          padding: 8px 16px; border-radius: 12px;
+          background: rgba(240,40,122,0.08); border: 1px solid rgba(240,40,122,0.2);
+          font-size: 13px; font-weight: 600; color: #e0a0d0;
+          cursor: pointer; position: relative; transition: background 0.2s;
+          font-family: 'JetBrains Mono', monospace;
         }
-        .acct-badge:hover { background: rgba(240,40,122,.14); }
+        .acct-badge:hover { background: rgba(240,40,122,0.14); }
+        .pulse { width: 8px; height: 8px; border-radius: 50%; background: #4ade80; animation: pulseGlow 2s ease infinite; flex-shrink: 0; }
+        @keyframes pulseGlow { 0%,100%{opacity:1;box-shadow:0 0 0 0 rgba(74,222,128,0.4)} 50%{opacity:.8;box-shadow:0 0 0 4px rgba(74,222,128,0)} }
+
         .wallet-menu {
-          position: absolute; top: calc(100% + 8px); right: 0;
-          background: #1a0a24; border: 1px solid rgba(240,40,122,.25);
-          border-radius: 14px; padding: 8px; min-width: 230px;
-          box-shadow: 0 12px 40px rgba(0,0,0,.5); z-index: 100;
-          animation: fadeIn .15s ease;
+          position: absolute; top: calc(100% + 10px); right: 0;
+          background: rgba(12,5,22,0.95); border: 1px solid rgba(240,40,122,0.25);
+          border-radius: 16px; padding: 8px; min-width: 240px;
+          box-shadow: 0 20px 60px rgba(0,0,0,0.6); z-index: 200;
+          backdrop-filter: blur(20px);
+          animation: menuPop 0.15s cubic-bezier(0.34,1.56,0.64,1);
         }
-        @keyframes fadeIn { from { opacity:0; transform:translateY(-4px); } to { opacity:1; transform:translateY(0); } }
+        @keyframes menuPop { from { opacity:0; transform:translateY(-6px) scale(0.97); } to { opacity:1; transform:translateY(0) scale(1); } }
         .wallet-addr {
-          font-size: 11px; color: #7a5a88; padding: 8px 10px 4px;
-          word-break: break-all; font-family: monospace; line-height: 1.5;
+          font-size: 10px; color: #7a5a88; padding: 10px 12px 6px;
+          word-break: break-all; font-family: 'JetBrains Mono', monospace; line-height: 1.6;
         }
-        .wallet-menu hr { border: none; border-top: 1px solid rgba(240,40,122,.1); margin: 6px 0; }
+        .wallet-menu-sep { border: none; border-top: 1px solid rgba(240,40,122,0.1); margin: 6px 0; }
         .wallet-menu-btn {
-          width: 100%; padding: 8px 10px; border: none; border-radius: 8px;
+          width: 100%; padding: 9px 12px; border: none; border-radius: 10px;
           background: none; color: #c97ab0; font-size: 13px; font-weight: 500;
-          cursor: pointer; text-align: left; transition: background .15s, color .15s;
-          display: flex; align-items: center; gap: 8px;
+          cursor: pointer; text-align: left; transition: all 0.15s;
+          display: flex; align-items: center; gap: 8px; font-family: 'Inter', sans-serif;
         }
-        .wallet-menu-btn:hover { background: rgba(240,40,122,.1); color: #f0e8f5; }
-        .wallet-menu-btn.danger:hover { background: rgba(248,113,113,.1); color: #f87171; }
-        .pulse { width: 8px; height: 8px; border-radius: 50%; background: #F0287A; animation: pulse 2s ease infinite; }
-        @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.5;transform:scale(.8)} }
+        .wallet-menu-btn:hover { background: rgba(240,40,122,0.1); color: #f0e8f5; }
+        .wallet-menu-btn.danger:hover { background: rgba(248,113,113,0.1); color: #f87171; }
 
-        /* Stats */
-        .stats { display: grid; grid-template-columns: repeat(auto-fit,minmax(160px,1fr)); gap: 12px; margin-bottom: 24px; }
-        .stat {
-          background: rgba(240,40,122,.05); border: 1px solid rgba(240,40,122,.12);
-          border-radius: 16px; padding: 20px; transition: border-color .2s;
+        /* ── Bento Stats Grid ── */
+        .bento {
+          display: grid;
+          grid-template-columns: 1fr 1fr 1.3fr 1fr;
+          gap: 14px;
+          margin-bottom: 20px;
         }
-        .stat:hover { border-color: rgba(240,40,122,.3); }
-        .stat-lbl { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .6px; color: #7a5a88; margin-bottom: 8px; }
-        .stat-val { font-size: 22px; font-weight: 800; letter-spacing: -.5px; }
-        .stat-sub { font-size: 11px; color: #5a3a66; margin-top: 4px; }
-        .refresh-btn { background: none; border: none; color: #7a5a88; cursor: pointer; font-size: 12px; padding: 4px 8px; border-radius: 8px; transition: color .2s, background .2s; }
-        .refresh-btn:hover { color: #F0287A; background: rgba(240,40,122,.1); }
-        .balances { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 24px; }
-        .bal-chip {
-          display: flex; align-items: center; gap: 6px; padding: 6px 14px;
-          background: rgba(240,40,122,.06); border: 1px solid rgba(240,40,122,.12);
-          border-radius: 100px; font-size: 12px; color: #b07aa8;
-        }
-        .bal-chip strong { color: #f0e8f5; }
+        @media (max-width: 700px) { .bento { grid-template-columns: 1fr 1fr; } }
 
-        /* Main card */
-        .card {
-          background: rgba(30,10,40,.6); border: 1px solid rgba(240,40,122,.12);
-          border-radius: 24px; overflow: hidden; backdrop-filter: blur(20px);
+        .bento-card {
+          background: rgba(255,255,255,0.03);
+          border: 1px solid rgba(240,40,122,0.1);
+          border-radius: 20px; padding: 20px;
+          backdrop-filter: blur(16px);
+          transition: border-color 0.25s, transform 0.2s;
+          position: relative; overflow: hidden;
+        }
+        .bento-card::before {
+          content: '';
+          position: absolute; top: 0; left: 0; right: 0; height: 1px;
+          background: linear-gradient(90deg, transparent, rgba(240,40,122,0.3), transparent);
+        }
+        .bento-card:hover { border-color: rgba(240,40,122,0.25); transform: translateY(-1px); }
+        .bento-card.hf-card { grid-column: span 1; background: rgba(240,40,122,0.04); }
+
+        .bento-lbl {
+          font-size: 10px; font-weight: 700; text-transform: uppercase;
+          letter-spacing: 1px; color: rgba(240,40,122,0.6); margin-bottom: 10px;
+          display: flex; align-items: center; gap: 6px;
+        }
+        .bento-lbl-dot { width: 4px; height: 4px; border-radius: 50%; background: #F0287A; }
+        .bento-val {
+          font-size: 26px; font-weight: 800; letter-spacing: -1px;
+          font-family: 'JetBrains Mono', monospace; color: #f0e8f5;
+          line-height: 1.1;
+        }
+        .bento-sub { font-size: 11px; color: #5a4070; margin-top: 6px; font-weight: 500; }
+
+        .wallet-bento {
+          display: flex; flex-direction: column; justify-content: space-between;
+        }
+        .wallet-bal-row { display: flex; flex-direction: column; gap: 6px; }
+        .wallet-bal {
+          display: flex; align-items: center; justify-content: space-between;
+          padding: 8px 10px;
+          background: rgba(240,40,122,0.06); border-radius: 10px;
+          font-size: 12px;
+        }
+        .wallet-bal-label { color: #7a5a88; font-weight: 600; }
+        .wallet-bal-val { color: #f0e8f5; font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 12px; }
+
+        .refresh-btn {
+          background: none; border: 1px solid rgba(240,40,122,0.15);
+          color: #7a5a88; cursor: pointer; font-size: 11px; padding: 5px 12px;
+          border-radius: 8px; transition: all 0.2s; margin-top: 10px;
+          font-family: 'Inter', sans-serif; font-weight: 500;
+        }
+        .refresh-btn:hover { color: #F0287A; border-color: rgba(240,40,122,0.4); background: rgba(240,40,122,0.07); }
+
+        /* ── Faucet Banner ── */
+        .faucet-bar {
+          display: flex; align-items: center; justify-content: space-between;
+          padding: 12px 20px; margin-bottom: 14px;
+          background: rgba(255,255,255,0.02);
+          border: 1px solid rgba(240,40,122,0.1);
+          border-radius: 16px; backdrop-filter: blur(12px);
+        }
+        .faucet-label { font-size: 12px; color: #7a5a88; font-weight: 600; letter-spacing: 0.3px; }
+        .faucet-btns  { display: flex; gap: 8px; }
+        .faucet-btn {
+          padding: 7px 16px; border-radius: 10px;
+          font-size: 12px; font-weight: 700; cursor: pointer;
+          transition: all 0.2s; font-family: 'Inter', sans-serif;
+          letter-spacing: 0.3px;
+        }
+        .faucet-btn.wdot {
+          background: rgba(240,40,122,0.12); border: 1px solid rgba(240,40,122,0.3);
+          color: #f0288a;
+        }
+        .faucet-btn.wdot:hover { background: rgba(240,40,122,0.22); box-shadow: 0 4px 16px rgba(240,40,122,0.2); }
+        .faucet-btn.usdc {
+          background: rgba(139,42,139,0.15); border: 1px solid rgba(139,42,139,0.35);
+          color: #d07ad0;
+        }
+        .faucet-btn.usdc:hover { background: rgba(139,42,139,0.25); box-shadow: 0 4px 16px rgba(139,42,139,0.2); }
+        .faucet-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        /* ── Action Card ── */
+        .action-card {
+          background: rgba(255,255,255,0.025);
+          border: 1px solid rgba(240,40,122,0.1);
+          border-radius: 24px; overflow: hidden;
+          backdrop-filter: blur(24px);
+          box-shadow: 0 8px 48px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.05);
         }
 
-        /* Tabs */
-        .tabs { display: flex; background: rgba(0,0,0,.3); padding: 6px; gap: 4px; }
+        /* ── Tabs ── */
+        .tabs-wrap {
+          display: flex; gap: 6px; padding: 10px;
+          background: rgba(0,0,0,0.25);
+          border-bottom: 1px solid rgba(240,40,122,0.08);
+        }
         .tab {
-          flex: 1; padding: 10px 6px; border: none; border-radius: 12px;
-          background: none; color: #7a5a88; font-size: 13px; font-weight: 500;
-          cursor: pointer; transition: background .2s, color .2s;
+          flex: 1; padding: 9px 4px; border: none; border-radius: 12px;
+          background: none; color: #5a4070; font-size: 12px; font-weight: 600;
+          cursor: pointer; transition: all 0.2s;
           display: flex; align-items: center; justify-content: center; gap: 5px;
+          font-family: 'Inter', sans-serif;
         }
-        .tab:hover { color: #c97ab0; background: rgba(240,40,122,.07); }
+        .tab:hover { color: #c97ab0; background: rgba(240,40,122,0.07); }
         .tab.active {
-          background: linear-gradient(135deg,rgba(240,40,122,.25),rgba(139,42,139,.25));
-          color: #f0e8f5; border: 1px solid rgba(240,40,122,.3);
+          background: linear-gradient(135deg, rgba(240,40,122,0.2), rgba(139,42,139,0.2));
+          color: #f0e8f5; border: 1px solid rgba(240,40,122,0.25);
+          box-shadow: 0 2px 12px rgba(240,40,122,0.15);
         }
 
-        /* Panel */
-        .panel { padding: 32px; }
-        .p-title { font-size: 20px; font-weight: 800; margin-bottom: 6px; }
-        .p-desc  { font-size: 13px; color: #7a5a88; margin-bottom: 28px; line-height: 1.6; }
-        .field-lbl { display: block; font-size: 11px; font-weight: 700; color: #b07aa8; text-transform: uppercase; letter-spacing: .6px; margin-bottom: 8px; }
+        /* ── Panel ── */
+        .panel { padding: 28px 28px 24px; }
 
-        .info-box {
-          background: rgba(240,40,122,.07); border: 1px solid rgba(240,40,122,.18);
-          border-radius: 12px; padding: 13px 16px; margin-bottom: 24px;
-          font-size: 12px; color: #c97ab0; line-height: 1.6;
+        .panel-header { margin-bottom: 20px; }
+        .panel-title {
+          font-size: 18px; font-weight: 800; letter-spacing: -0.4px;
+          color: #f0e8f5; margin-bottom: 4px;
         }
-        .info-box b { color: #f0e8f5; }
+        .panel-desc { font-size: 12px; color: #6a4a7a; line-height: 1.7; }
+
+        .info-row {
+          display: flex; align-items: center; gap: 10px;
+          padding: 12px 16px; margin-bottom: 20px;
+          background: rgba(240,40,122,0.06); border: 1px solid rgba(240,40,122,0.14);
+          border-radius: 12px; font-size: 12px; color: #b07aa8; line-height: 1.6;
+        }
+        .info-row-icon { font-size: 16px; flex-shrink: 0; }
+        .info-row b { color: #f0e8f5; font-weight: 700; }
+
+        .field-lbl {
+          display: block; font-size: 10px; font-weight: 800;
+          text-transform: uppercase; letter-spacing: 1px;
+          color: rgba(240,40,122,0.7); margin-bottom: 8px;
+        }
 
         .inp-wrap { position: relative; margin-bottom: 20px; }
         .inp-wrap input, .addr-inp {
-          width: 100%; padding: 14px 60px 14px 16px;
-          background: rgba(240,40,122,.06); border: 1px solid rgba(240,40,122,.15);
-          border-radius: 14px; color: #f0e8f5; font-size: 16px; font-family: 'Inter',sans-serif;
-          outline: none; transition: border-color .2s, box-shadow .2s;
+          width: 100%;
+          padding: 15px 70px 15px 18px;
+          background: rgba(240,40,122,0.05);
+          border: 1px solid rgba(240,40,122,0.15);
+          border-radius: 14px; color: #f0e8f5;
+          font-size: 18px; font-weight: 600;
+          font-family: 'JetBrains Mono', monospace;
+          outline: none; transition: border-color 0.2s, box-shadow 0.2s;
         }
-        .addr-inp { padding: 14px 16px; font-size: 14px; font-family: 'Inter',monospace; margin-bottom: 20px; }
+        .addr-inp {
+          padding: 15px 18px; font-size: 13px;
+          font-family: 'JetBrains Mono', monospace; margin-bottom: 20px;
+        }
         .inp-wrap input:focus, .addr-inp:focus {
-          border-color: rgba(240,40,122,.6);
-          box-shadow: 0 0 0 3px rgba(240,40,122,.15);
+          border-color: rgba(240,40,122,0.5);
+          box-shadow: 0 0 0 3px rgba(240,40,122,0.12),
+                      0 0 20px rgba(240,40,122,0.08);
         }
-        .inp-wrap input::placeholder, .addr-inp::placeholder { color: #4a2a55; }
-        .inp-unit { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); font-size: 12px; font-weight: 700; color: #F0287A; }
+        .inp-wrap input::placeholder, .addr-inp::placeholder { color: #3d2250; }
+        .inp-unit {
+          position: absolute; right: 16px; top: 50%; transform: translateY(-50%);
+          font-size: 12px; font-weight: 800; color: #F0287A;
+          font-family: 'Inter', sans-serif; letter-spacing: 0.5px;
+          background: rgba(240,40,122,0.12); padding: 4px 10px;
+          border-radius: 8px;
+        }
 
         .action-btn {
           width: 100%; padding: 16px;
-          background: linear-gradient(135deg,#F0287A,#8B2A8B);
-          border: none; border-radius: 14px; color: #fff; font-size: 16px; font-weight: 800;
-          cursor: pointer; transition: opacity .2s, transform .15s, box-shadow .2s;
+          background: linear-gradient(135deg, #F0287A 0%, #a022a0 100%);
+          border: none; border-radius: 14px; color: #fff;
+          font-size: 15px; font-weight: 800; letter-spacing: 0.3px;
+          cursor: pointer; transition: all 0.2s;
+          font-family: 'Inter', sans-serif;
+          box-shadow: 0 4px 24px rgba(240,40,122,0.3);
+          position: relative; overflow: hidden;
         }
-        .action-btn:hover:not(:disabled) { opacity: .9; transform: translateY(-1px); box-shadow: 0 8px 28px rgba(240,40,122,.35); }
-        .action-btn:disabled { opacity: .45; cursor: not-allowed; }
-        .action-btn.danger { background: linear-gradient(135deg,#dc2626,#8B2A8B); }
-        .action-btn.danger:hover:not(:disabled) { box-shadow: 0 8px 28px rgba(220,38,38,.3); }
+        .action-btn::before {
+          content: '';
+          position: absolute; inset: 0;
+          background: linear-gradient(135deg, rgba(255,255,255,0.15), transparent);
+          opacity: 0; transition: opacity 0.2s;
+        }
+        .action-btn:hover:not(:disabled)::before { opacity: 1; }
+        .action-btn:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 8px 32px rgba(240,40,122,0.45); }
+        .action-btn:active:not(:disabled) { transform: translateY(0); }
+        .action-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        .action-btn.danger {
+          background: linear-gradient(135deg, #dc2626 0%, #8B2A8B 100%);
+          box-shadow: 0 4px 24px rgba(220,38,38,0.3);
+        }
+        .action-btn.danger:hover:not(:disabled) { box-shadow: 0 8px 32px rgba(220,38,38,0.45); }
 
-        .feedback { margin-top: 16px; }
-        .tx-ok {
-          background: rgba(74,222,128,.08); border: 1px solid rgba(74,222,128,.2);
-          border-radius: 12px; padding: 12px 16px; font-size: 12px; color: #4ade80; word-break: break-all;
-        }
-        .tx-ok a { color: #4ade80; }
-        .tx-err {
-          background: rgba(240,40,122,.08); border: 1px solid rgba(240,40,122,.2);
-          border-radius: 12px; padding: 12px 16px; font-size: 12px; color: #f87171; word-break: break-all;
-        }
-
-        /* AI Warning Banner */
-        .warn-banner {
-          display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
-          background: linear-gradient(135deg, rgba(251,146,60,.12), rgba(240,40,122,.10));
-          border: 1px solid rgba(251,146,60,.45);
-          border-radius: 16px; padding: 16px 20px; margin-bottom: 20px;
-          animation: warnPulse 2.5s ease-in-out infinite;
-        }
-        @keyframes warnPulse {
-          0%,100% { box-shadow: 0 0 0 0 rgba(251,146,60,0); }
-          50%      { box-shadow: 0 0 18px 4px rgba(251,146,60,.18); }
-        }
-        .warn-icon { font-size: 26px; flex-shrink: 0; margin-top: 2px; }
-        .warn-body { flex: 1; }
-        .warn-title { font-size: 14px; font-weight: 800; color: #fb923c; margin-bottom: 4px; }
-        .warn-msg   { font-size: 12px; color: #c97ab0; line-height: 1.6; }
-        .warn-close { background: none; border: none; color: #7a5a88; cursor: pointer; font-size: 18px; padding: 0; flex-shrink: 0; }
-        .warn-close:hover { color: #fb923c; }
-
+        /* ── Spinner ── */
         @keyframes spin { to { transform: rotate(360deg); } }
-        .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid rgba(255,255,255,.3); border-top-color: #fff; border-radius: 50%; animation: spin .7s linear infinite; vertical-align: middle; margin-right: 8px; }
+        .spinner {
+          display: inline-block; width: 14px; height: 14px;
+          border: 2px solid rgba(255,255,255,0.3); border-top-color: #fff;
+          border-radius: 50%; animation: spin 0.7s linear infinite;
+          vertical-align: middle; margin-right: 8px;
+        }
 
-        /* Toast Notifications */
+        /* ── Toast ── */
         .toast-container {
-          position: fixed; top: 24px; right: 24px; z-index: 9999;
-          display: flex; flex-direction: column; gap: 10px; max-width: 360px;
+          position: fixed; bottom: 28px; right: 24px; z-index: 9999;
+          display: flex; flex-direction: column-reverse; gap: 10px; max-width: 360px;
         }
-        @keyframes slideIn {
-          from { opacity: 0; transform: translateX(110%); }
-          to   { opacity: 1; transform: translateX(0); }
-        }
+        @keyframes slideUp { from { opacity:0; transform:translateY(20px); } to { opacity:1; transform:translateY(0); } }
         .toast {
           display: flex; align-items: flex-start; gap: 12px;
-          padding: 14px 16px; border-radius: 14px; cursor: default;
-          backdrop-filter: blur(12px); animation: slideIn .25s ease;
-          box-shadow: 0 8px 32px rgba(0,0,0,.4);
+          padding: 14px 16px; border-radius: 16px;
+          backdrop-filter: blur(20px); animation: slideUp 0.25s cubic-bezier(0.34,1.2,0.64,1);
+          box-shadow: 0 12px 40px rgba(0,0,0,0.5);
         }
-        .toast-success { background: rgba(74,222,128,.12); border: 1px solid rgba(74,222,128,.3); }
-        .toast-error   { background: rgba(248,113,113,.12); border: 1px solid rgba(248,113,113,.3); }
-        .toast-warning { background: rgba(251,146,60,.12); border: 1px solid rgba(251,146,60,.3); }
-        .toast-info    { background: rgba(96,165,250,.12); border: 1px solid rgba(96,165,250,.3); }
+        .toast-success { background: rgba(15,30,20,0.92); border: 1px solid rgba(74,222,128,0.35); }
+        .toast-error   { background: rgba(30,10,10,0.92); border: 1px solid rgba(248,113,113,0.35); }
+        .toast-warning { background: rgba(30,20,5,0.92);  border: 1px solid rgba(251,146,60,0.4); }
+        .toast-info    { background: rgba(10,20,40,0.92); border: 1px solid rgba(96,165,250,0.35); }
         .toast-icon  { font-size: 18px; flex-shrink: 0; margin-top: 1px; }
         .toast-body  { flex: 1; min-width: 0; }
         .toast-title { font-size: 13px; font-weight: 700; color: #f0e8f5; margin-bottom: 2px; }
-        .toast-msg   { font-size: 11px; color: #b07aa8; line-height: 1.5; word-break: break-all; }
+        .toast-msg   { font-size: 11px; color: #907898; line-height: 1.5; word-break: break-all; }
         .toast-msg a { color: #60a5fa; text-decoration: underline; }
-        .toast-close { background: none; border: none; color: #7a5a88; cursor: pointer; font-size: 16px; padding: 0; flex-shrink: 0; line-height: 1; transition: color .15s; }
+        .toast-close {
+          background: none; border: none; color: #4a3060; cursor: pointer;
+          font-size: 16px; padding: 0; flex-shrink: 0; line-height: 1;
+          transition: color 0.15s;
+        }
         .toast-close:hover { color: #f0e8f5; }
-        .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid rgba(255,255,255,.3); border-top-color: #fff; border-radius: 50%; animation: spin .7s linear infinite; vertical-align: middle; margin-right: 8px; }
 
-        /* Landing */
-        .landing { text-align: center; padding: 80px 32px; }
-        .landing h2 { font-size: 28px; font-weight: 800; margin: 20px 0 10px; background: linear-gradient(90deg,#F0287A,#8B2A8B); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-        .landing p { color: #7a5a88; font-size: 14px; margin-bottom: 32px; line-height: 1.7; }
-        .chips { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin-bottom: 36px; }
-        .chip { padding: 5px 14px; background: rgba(240,40,122,.08); border: 1px solid rgba(240,40,122,.18); border-radius: 100px; font-size: 12px; color: #b07aa8; }
-        .chip span { color: #F0287A; font-weight: 700; }
+        /* ── Landing page ── */
+        .landing {
+          text-align: center;
+          padding: 60px 24px 80px;
+        }
+        .landing-logo { margin-bottom: 32px; position: relative; display: inline-block; }
+        .landing-logo-glow {
+          position: absolute; top: 50%; left: 50%;
+          transform: translate(-50%,-50%);
+          width: 120px; height: 120px; border-radius: 50%;
+          background: radial-gradient(circle, rgba(240,40,122,0.3) 0%, transparent 70%);
+          filter: blur(20px);
+        }
+        .landing-title {
+          font-size: 52px; font-weight: 900; letter-spacing: -2px;
+          line-height: 1.05; margin-bottom: 8px;
+          background: linear-gradient(135deg, #ff6aa8 0%, #F0287A 40%, #c034b8 75%, #8B2A8B 100%);
+          -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        }
+        .landing-sub {
+          font-size: 14px; color: #6a4a7a; line-height: 1.8;
+          margin-bottom: 48px; max-width: 420px; margin-left: auto; margin-right: auto;
+        }
+        .landing-stats {
+          display: flex; gap: 12px; flex-wrap: wrap; justify-content: center;
+          margin-bottom: 48px;
+        }
+        .landing-stat {
+          padding: 14px 22px; border-radius: 16px;
+          background: rgba(255,255,255,0.03);
+          border: 1px solid rgba(240,40,122,0.15);
+          backdrop-filter: blur(12px);
+          text-align: left; min-width: 110px;
+        }
+        .landing-stat-val { font-size: 22px; font-weight: 800; color: #F0287A; font-family: 'JetBrains Mono', monospace; }
+        .landing-stat-lbl { font-size: 10px; color: #6a4a7a; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; margin-top: 2px; }
+
+        .landing-cta {
+          padding: 16px 52px;
+          background: linear-gradient(135deg, #F0287A, #a022a0);
+          border: none; border-radius: 16px; color: #fff;
+          font-size: 16px; font-weight: 800; letter-spacing: 0.3px;
+          cursor: pointer; transition: all 0.2s;
+          font-family: 'Inter', sans-serif;
+          box-shadow: 0 8px 32px rgba(240,40,122,0.4);
+        }
+        .landing-cta:hover { transform: translateY(-2px); box-shadow: 0 12px 40px rgba(240,40,122,0.55); }
+
+        /* ── Scrollbar ── */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: rgba(240,40,122,0.3); border-radius: 3px; }
       `}</style>
 
-      {/* Orbs */}
-      <div className="orb" style={{ width: 600, height: 600, background: "#F0287A", top: -200, left: -200 }} />
-      <div className="orb" style={{ width: 400, height: 400, background: "#8B2A8B", bottom: -100, right: -100 }} />
+      <div className="bg-mesh" />
+      <div className="bg-grid" />
 
-      <div className="wrap">
-        {/* Header */}
+      <div className="app-wrap">
+        {/* ── Header ── */}
         <header className="hdr">
           <div className="brand">
-            <NovaDotLogo size={42} />
-            <div className="brand-text">
-              <h1>NovaDot</h1>
-              <p>Polkadot Hub EVM · Paseo Testnet</p>
+            <NovaDotLogo size={38} />
+            <div>
+              <div className="brand-name">NovaDot</div>
+              <div className="brand-tag">DeFi Lending · Polkadot Hub EVM</div>
             </div>
           </div>
-          {!account
-            ? <button className="connect-btn" onClick={connectWallet}>Connect Wallet</button>
-            : (
-              <div className="acct-badge" onClick={() => setWalletMenu(m => !m)}>
-                <span className="pulse" />
-                {account.slice(0,6)}…{account.slice(-4)}
-                <span style={{ fontSize: 10, marginLeft: 2, opacity: 0.6 }}>▾</span>
-                {walletMenu && (
-                  <div className="wallet-menu" onClick={e => e.stopPropagation()}>
-                    <div className="wallet-addr">{account}</div>
-                    <hr />
-                    <button className="wallet-menu-btn" onClick={() => { navigator.clipboard.writeText(account); setWalletMenu(false); }}>
-                      📋 Copy Address
-                    </button>
-                    <button className="wallet-menu-btn" onClick={() => window.open(`https://blockscout-passet-hub.parity-testnet.parity.io/address/${account}`, "_blank")}>
-                      🔍 View on Explorer
-                    </button>
-                    <hr />
-                    <button className="wallet-menu-btn danger" onClick={disconnectWallet}>
-                      🔌 Disconnect
-                    </button>
-                  </div>
-                )}
-              </div>
-            )
-          }
+
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span className="testnet-pill">TESTNET</span>
+            {!account
+              ? <button className="connect-btn" onClick={connectWallet}>Connect Wallet</button>
+              : (
+                <div className="acct-badge" onClick={() => setWalletMenu(m => !m)}>
+                  <span className="pulse" />
+                  {account.slice(0,6)}…{account.slice(-4)}
+                  <span style={{ fontSize: 10, opacity: 0.5 }}>▾</span>
+                  {walletMenu && (
+                    <div className="wallet-menu" onClick={e => e.stopPropagation()}>
+                      <div className="wallet-addr">{account}</div>
+                      <hr className="wallet-menu-sep" />
+                      <button className="wallet-menu-btn" onClick={() => { navigator.clipboard.writeText(account); setWalletMenu(false); }}>
+                        📋 Copy Address
+                      </button>
+                      <button className="wallet-menu-btn" onClick={() => window.open(`https://blockscout-passet-hub.parity-testnet.parity.io/address/${account}`, "_blank")}>
+                        🔍 View on Explorer
+                      </button>
+                      <hr className="wallet-menu-sep" />
+                      <button className="wallet-menu-btn danger" onClick={disconnectWallet}>
+                        🔌 Disconnect
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )
+            }
+          </div>
         </header>
 
-
         {!account ? (
+          /* ── Landing Page ── */
           <div className="landing">
-            <NovaDotLogo size={80} />
-            <h2>Stablecoin Micro-Lending</h2>
-            <p>Deposit WDOT as collateral and borrow MockUSDC against it.<br />Simple interest · Aave-style health factor · Instant liquidations.</p>
-            <div className="chips">
-              <div className="chip">Min Collateral <span>150%</span></div>
-              <div className="chip">Liquidation <span>120%</span></div>
-              <div className="chip">APR <span>10%</span></div>
-              <div className="chip">Liq. Bonus <span>5%</span></div>
+            <div className="landing-logo">
+              <div className="landing-logo-glow" />
+              <NovaDotLogo size={88} />
             </div>
-            <button className="connect-btn" style={{ fontSize: 16, padding: "14px 44px" }} onClick={connectWallet}>Connect Wallet</button>
+            <div className="landing-title">Lend Smarter.<br/>Borrow Boldly.</div>
+            <p className="landing-sub">
+              Deposit WDOT as collateral, borrow stablecoins instantly.<br/>
+              AI-powered health monitoring keeps your position safe.
+            </p>
+            <div className="landing-stats">
+              <div className="landing-stat">
+                <div className="landing-stat-val">150%</div>
+                <div className="landing-stat-lbl">Min Collateral</div>
+              </div>
+              <div className="landing-stat">
+                <div className="landing-stat-val">10%</div>
+                <div className="landing-stat-lbl">APR</div>
+              </div>
+              <div className="landing-stat">
+                <div className="landing-stat-val">120%</div>
+                <div className="landing-stat-lbl">Liq. Threshold</div>
+              </div>
+              <div className="landing-stat">
+                <div className="landing-stat-val">5%</div>
+                <div className="landing-stat-lbl">Liq. Bonus</div>
+              </div>
+            </div>
+            <button className="landing-cta" onClick={connectWallet}>
+              Launch App →
+            </button>
           </div>
         ) : (
           <>
+            {/* ── Bento Stats Grid ── */}
             {position && (
-              <>
-                <div className="stats">
-                  <div className="stat">
-                    <div className="stat-lbl">Collateral</div>
-                    <div className="stat-val">{parseFloat(position.collateral).toFixed(4)}</div>
-                    <div className="stat-sub">WDOT deposited</div>
-                  </div>
-                  <div className="stat">
-                    <div className="stat-lbl">Debt</div>
-                    <div className="stat-val">{parseFloat(position.debt).toFixed(2)}</div>
-                    <div className="stat-sub">USDC borrowed</div>
-                  </div>
-                  <div className="stat">
-                    <div className="stat-lbl">Health Factor</div>
-                    <div className="stat-val" style={{ color: hfColor(position.healthFactor) }}>{position.healthFactor}</div>
-                    <div className="stat-sub">≥ 1.0 is safe</div>
-                  </div>
-                  <div className="stat" style={{ display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
-                    <div>
-                      <div className="stat-lbl">Wallet</div>
-                      <div style={{ fontSize: 14, fontWeight: 600 }}>{position.wdotBalance} WDOT</div>
-                      <div style={{ fontSize: 14, fontWeight: 600, marginTop: 4 }}>{position.usdcBalance} USDC</div>
-                    </div>
-                    <button className="refresh-btn" onClick={fetchPosition} disabled={refreshing}>
-                      {refreshing ? "↻ Refreshing…" : "↻ Refresh"}
-                    </button>
-                  </div>
+              <div className="bento">
+                <div className="bento-card">
+                  <div className="bento-lbl"><span className="bento-lbl-dot"/>Collateral</div>
+                  <div className="bento-val">{parseFloat(position.collateral).toFixed(2)}</div>
+                  <div className="bento-sub">WDOT deposited</div>
                 </div>
-              </>
-            )}
 
-            <div className="card">
-              <div className="tabs" style={{ padding: "12px 16px", background: "rgba(0,0,0,.4)", borderBottom: "1px solid rgba(240,40,122,.1)" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div style={{ fontSize: 13, color: "#b07aa8", fontWeight: 600 }}>Testnet Faucets</div>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <button style={{ padding: "6px 12px", background: "rgba(240,40,122,.15)", border: "1px solid rgba(240,40,122,.3)", borderRadius: 8, color: "#f0e8f5", fontSize: 11, fontWeight: 700, cursor: "pointer", transition: ".2s" }} onClick={() => handleFaucet(WDOT_ADDRESS, "WDOT")} disabled={loading}>+ 100 WDOT</button>
-                    <button style={{ padding: "6px 12px", background: "rgba(139,42,139,.2)", border: "1px solid rgba(139,42,139,.4)", borderRadius: 8, color: "#f0e8f5", fontSize: 11, fontWeight: 700, cursor: "pointer", transition: ".2s" }} onClick={() => handleFaucet(USDC_ADDRESS, "USDC")} disabled={loading}>+ 1,000 USDC</button>
+                <div className="bento-card">
+                  <div className="bento-lbl"><span className="bento-lbl-dot"/>Debt</div>
+                  <div className="bento-val" style={{ color: parseFloat(position.debt) > 0 ? "#facc15" : "#4ade80" }}>
+                    {parseFloat(position.debt).toFixed(2)}
                   </div>
+                  <div className="bento-sub">USDC borrowed</div>
+                </div>
+
+                <div className="bento-card hf-card" style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+                  <div className="bento-lbl" style={{ marginBottom: 6 }}><span className="bento-lbl-dot"/>Health Factor</div>
+                  <HFGauge value={position.healthFactor} />
+                </div>
+
+                <div className="bento-card wallet-bento">
+                  <div className="bento-lbl"><span className="bento-lbl-dot"/>Wallet</div>
+                  <div className="wallet-bal-row">
+                    <div className="wallet-bal">
+                      <span className="wallet-bal-label">WDOT</span>
+                      <span className="wallet-bal-val">{position.wdotBalance}</span>
+                    </div>
+                    <div className="wallet-bal">
+                      <span className="wallet-bal-label">USDC</span>
+                      <span className="wallet-bal-val">{position.usdcBalance}</span>
+                    </div>
+                  </div>
+                  <button className="refresh-btn" onClick={fetchPosition} disabled={refreshing}>
+                    {refreshing ? "↻ Loading…" : "↻ Refresh"}
+                  </button>
                 </div>
               </div>
+            )}
 
-              <div className="tabs">
+            {/* ── Faucet Bar ── */}
+            <div className="faucet-bar">
+              <span className="faucet-label">🚰 Testnet Faucet</span>
+              <div className="faucet-btns">
+                <button className="faucet-btn wdot" onClick={() => handleFaucet(WDOT_ADDRESS, "WDOT")} disabled={loading}>
+                  + 100 WDOT
+                </button>
+                <button className="faucet-btn usdc" onClick={() => handleFaucet(USDC_ADDRESS, "USDC")} disabled={loading}>
+                  + 1,000 USDC
+                </button>
+              </div>
+            </div>
+
+            {/* ── Action Card ── */}
+            <div className="action-card">
+              <div className="tabs-wrap">
                 {tabs.map(t => (
                   <button key={t.id} className={`tab${activeTab === t.id ? " active" : ""}`}
                     onClick={() => { setActiveTab(t.id); setAmount(""); }}>
-                    {t.icon} {t.label}
+                    <span>{t.icon}</span> {t.label}
                   </button>
                 ))}
               </div>
 
               <div className="panel">
-                <div className="p-title">{cfg.title}</div>
-                <div className="p-desc">{cfg.desc}</div>
-                <div className="info-box">{cfg.info}</div>
+                <div className="panel-header">
+                  <div className="panel-title">{cfg.title}</div>
+                  <div className="panel-desc">{cfg.desc}</div>
+                </div>
 
-                <label className="field-lbl">{cfg.isLiquidate ? "Borrower Address" : `Amount (${cfg.unit})`}</label>
+                <div className="info-row">
+                  <span className="info-row-icon">ℹ️</span>
+                  <span>{cfg.info}</span>
+                </div>
+
+                <label className="field-lbl">
+                  {cfg.isLiquidate ? "Borrower Address" : `Amount (${cfg.unit})`}
+                </label>
 
                 {cfg.isLiquidate ? (
-                  <input className="addr-inp" placeholder="0x… borrower address" value={borrowerAddr} onChange={e => setBorrowerAddr(e.target.value)} />
+                  <input className="addr-inp" placeholder="0x… borrower address"
+                    value={borrowerAddr} onChange={e => setBorrowerAddr(e.target.value)} />
                 ) : (
                   <div className="inp-wrap">
-                    <input type="number" placeholder="0.00" min="0" value={amount} onChange={e => setAmount(e.target.value)} />
+                    <input type="number" placeholder="0.00" min="0"
+                      value={amount} onChange={e => setAmount(e.target.value)} />
                     {cfg.unit && <span className="inp-unit">{cfg.unit}</span>}
                   </div>
                 )}
@@ -626,11 +870,11 @@ export default function App(): React.ReactElement {
                   className={`action-btn${cfg.isLiquidate ? " danger" : ""}`}
                   disabled={loading || (cfg.isLiquidate ? !borrowerAddr : !amount || parseFloat(amount) <= 0)}
                   onClick={() => {
-                    if (activeTab === "deposit")   handleDeposit();
-                    else if (activeTab === "borrow")   handleBorrow();
-                    else if (activeTab === "repay")    handleRepay();
-                    else if (activeTab === "withdraw") handleWithdraw();
-                    else handleLiquidate();
+                    if (activeTab === "deposit")        handleDeposit();
+                    else if (activeTab === "borrow")    handleBorrow();
+                    else if (activeTab === "repay")     handleRepay();
+                    else if (activeTab === "withdraw")  handleWithdraw();
+                    else                                handleLiquidate();
                   }}
                 >
                   {loading ? <><span className="spinner" />Processing…</> : cfg.title}
@@ -641,7 +885,7 @@ export default function App(): React.ReactElement {
         )}
       </div>
 
-      {/* Toast Notifications */}
+      {/* ── Toast Notifications ── */}
       <div className="toast-container">
         {toasts.map(t => (
           <div key={t.id} className={`toast toast-${t.type}`}>
@@ -654,8 +898,7 @@ export default function App(): React.ReactElement {
                 <div className="toast-msg">
                   {t.type === "success" && t.message.startsWith("0x")
                     ? <a href={`https://blockscout-passet-hub.parity-testnet.parity.io/tx/${t.message}`} target="_blank" rel="noreferrer">View on Blockscout 🔗</a>
-                    : t.message
-                  }
+                    : t.message}
                 </div>
               )}
             </div>
